@@ -449,6 +449,7 @@
                             <th>Minggu Terbayar</th>
                             <th>Tunggakan</th>
                             <th>Status Minggu Ini</th>
+                            <th>Aksi</th>
                         </tr>
                     </thead>
                     <tbody id="members-table-body">
@@ -602,7 +603,9 @@
                 ...member,
                 paymentHistory: [],
                 lastPaymentDate: null,
-                lastPaymentWeek: null
+                lastPaymentWeek: null,
+                // TAMBAHAN: status minggu ini
+                paidThisWeek: false
             }));
             saveData();
         }
@@ -613,47 +616,63 @@
             localStorage.setItem('kasSettings', JSON.stringify(settings));
         }
         
-        // Fungsi untuk menghitung minggu terbayar dan tunggakan
+        // PERBAIKAN: Fungsi untuk menghitung minggu terbayar dan tunggakan
         function calculateMemberStats(member) {
             const weeksPaid = Math.floor(member.totalPaid / WEEKLY_PAYMENT);
             const debt = (totalWeeks * WEEKLY_PAYMENT) - member.totalPaid;
-            const paidThisWeek = isPaidThisWeek(member);
+            
+            // PERBAIKAN: Hitung progress berdasarkan total yang sudah dibayar
             const progressPercentage = Math.min(100, (member.totalPaid / (totalWeeks * WEEKLY_PAYMENT)) * 100);
             
             return {
                 weeksPaid,
                 debt: debt > 0 ? debt : 0,
-                paidThisWeek,
+                paidThisWeek: member.paidThisWeek || false, // Gunakan status yang sudah disimpan
                 progressPercentage
             };
         }
         
-        // Fungsi untuk memeriksa apakah anggota sudah bayar minggu ini
-        function isPaidThisWeek(member) {
+        // PERBAIKAN: Fungsi untuk memeriksa dan memperbarui status minggu ini
+        function updatePaidThisWeekStatus() {
             const today = new Date();
-            const startOfWeek = new Date(today);
-            startOfWeek.setDate(today.getDate() - today.getDay()); // Minggu dimulai hari Minggu
+            const startOfWeek = getStartOfWeek(today);
             
-            // Cek dalam riwayat pembayaran
-            if (member.paymentHistory && member.paymentHistory.length > 0) {
-                const recentPayment = member.paymentHistory
-                    .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+            kasData.forEach(member => {
+                // Reset status minggu ini
+                member.paidThisWeek = false;
                 
-                if (recentPayment && new Date(recentPayment.date) >= startOfWeek) {
-                    return true;
+                // Cek dalam riwayat pembayaran
+                if (member.paymentHistory && member.paymentHistory.length > 0) {
+                    const recentPayment = member.paymentHistory
+                        .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+                    
+                    if (recentPayment && new Date(recentPayment.date) >= startOfWeek) {
+                        member.paidThisWeek = true;
+                    }
                 }
-            }
+            });
             
-            return false;
+            saveData();
+        }
+        
+        // Fungsi bantu untuk mendapatkan awal minggu (Senin)
+        function getStartOfWeek(date) {
+            const d = new Date(date);
+            const day = d.getDay();
+            const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Adjust when day is Sunday
+            return new Date(d.setDate(diff));
         }
         
         // Fungsi untuk memperbarui tampilan
         function updateDisplay() {
+            // PERBAIKAN: Update status minggu ini sebelum menampilkan data
+            updatePaidThisWeekStatus();
+            
             // Hitung statistik
             const totalMembers = kasData.length;
             const totalCollected = kasData.reduce((sum, member) => sum + member.totalPaid, 0);
             
-            const pendingThisWeek = kasData.filter(member => !calculateMemberStats(member).paidThisWeek).length;
+            const pendingThisWeek = kasData.filter(member => !member.paidThisWeek).length;
             const totalDebt = kasData.reduce((sum, member) => sum + calculateMemberStats(member).debt, 0);
             
             // Update statistik
@@ -678,9 +697,14 @@
                     <td>${stats.weeksPaid} minggu</td>
                     <td>${stats.debt > 0 ? `Rp ${stats.debt.toLocaleString()}` : 'Lunas'}</td>
                     <td>
-                        <span class="status ${stats.paidThisWeek ? 'status-paid' : 'status-pending'}">
-                            ${stats.paidThisWeek ? '✅ Sudah Bayar' : '⚠️ Belum Bayar'}
+                        <span class="status ${member.paidThisWeek ? 'status-paid' : 'status-pending'}">
+                            ${member.paidThisWeek ? '✅ Sudah Bayar' : '⚠️ Belum Bayar'}
                         </span>
+                    </td>
+                    <td>
+                        <button class="btn btn-primary btn-sm mark-paid-btn" data-name="${member.name}">
+                            <i class="fas fa-check"></i> Tandai Sudah Bayar
+                        </button>
                     </td>
                 `;
                 
@@ -698,6 +722,14 @@
                 });
             });
             
+            // Tambahkan event listener untuk tombol tandai sudah bayar
+            document.querySelectorAll('.mark-paid-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const memberName = e.target.closest('.mark-paid-btn').getAttribute('data-name');
+                    markAsPaidThisWeek(memberName);
+                });
+            });
+            
             // Update notifikasi
             updateNotifications();
             
@@ -708,13 +740,39 @@
             updateSettingsForm();
         }
         
+        // Fungsi untuk menandai anggota sudah bayar minggu ini
+        function markAsPaidThisWeek(memberName) {
+            const member = kasData.find(m => m.name === memberName);
+            if (member) {
+                member.paidThisWeek = true;
+                
+                // Tambahkan riwayat pembayaran otomatis
+                if (!member.paymentHistory) {
+                    member.paymentHistory = [];
+                }
+                
+                member.paymentHistory.push({
+                    date: new Date().toISOString().split('T')[0],
+                    amount: WEEKLY_PAYMENT,
+                    notes: 'Pembayaran minggu ini (ditandai manual)'
+                });
+                
+                member.lastPaymentDate = new Date().toISOString().split('T')[0];
+                
+                saveData();
+                updateDisplay();
+                
+                alert(`✅ ${memberName} berhasil ditandai sudah bayar minggu ini!`);
+            }
+        }
+        
         // Fungsi untuk memperbarui notifikasi
         function updateNotifications() {
             const container = document.getElementById('notifications-container');
             container.innerHTML = '';
             
             // Notifikasi untuk yang belum bayar minggu ini
-            const unpaidThisWeek = kasData.filter(member => !calculateMemberStats(member).paidThisWeek);
+            const unpaidThisWeek = kasData.filter(member => !member.paidThisWeek);
             
             if (unpaidThisWeek.length > 0) {
                 const notification = document.createElement('div');
@@ -794,7 +852,7 @@
             
             // Notifikasi untuk yang sudah lunas
             const membersPaid = kasData.filter(member => 
-                calculateMemberStats(member).paidThisWeek && 
+                member.paidThisWeek && 
                 calculateMemberStats(member).debt === 0
             );
             
@@ -855,7 +913,7 @@
                     <p><strong>Tunggakan:</strong> ${stats.debt > 0 ? `Rp ${stats.debt.toLocaleString()}` : 'Tidak ada'}</p>
                 </div>
                 <div class="form-group">
-                    <p><strong>Status Minggu Ini:</strong> ${stats.paidThisWeek ? 'Sudah bayar' : 'Belum bayar'}</p>
+                    <p><strong>Status Minggu Ini:</strong> ${member.paidThisWeek ? 'Sudah bayar' : 'Belum bayar'}</p>
                 </div>
                 
                 <div class="form-group">
@@ -865,6 +923,12 @@
                              style="width: ${stats.progressPercentage}%"></div>
                     </div>
                     <p>${stats.progressPercentage.toFixed(1)}% dari target</p>
+                </div>
+                
+                <div class="form-group">
+                    <button class="btn btn-primary" id="mark-paid-modal-btn" data-name="${member.name}">
+                        <i class="fas fa-check"></i> Tandai Sudah Bayar Minggu Ini
+                    </button>
                 </div>
             `;
             
@@ -891,6 +955,13 @@
             }
             
             document.getElementById('modal-member-details').innerHTML = detailsHTML;
+            
+            // Tambahkan event listener untuk tombol di modal
+            document.getElementById('mark-paid-modal-btn').addEventListener('click', () => {
+                markAsPaidThisWeek(member.name);
+                document.getElementById('member-modal').style.display = 'none';
+            });
+            
             document.getElementById('member-modal').style.display = 'flex';
         }
         
@@ -917,6 +988,13 @@
             
             // Update data anggota
             member.totalPaid += amount;
+            
+            // PERBAIKAN: Otomatis tandai sudah bayar minggu ini jika pembayaran dilakukan minggu ini
+            const paymentDate = new Date(date);
+            const startOfWeek = getStartOfWeek(new Date());
+            if (paymentDate >= startOfWeek) {
+                member.paidThisWeek = true;
+            }
             
             // Tambahkan ke riwayat pembayaran
             if (!member.paymentHistory) {
@@ -981,7 +1059,7 @@
         // Event listener untuk tombol kirim pengingat
         document.getElementById('send-reminders-btn').addEventListener('click', function() {
             // Simulasikan pengiriman pengingat
-            const unpaidThisWeek = kasData.filter(member => !calculateMemberStats(member).paidThisWeek);
+            const unpaidThisWeek = kasData.filter(member => !member.paidThisWeek);
             const membersWithDebt = kasData.filter(member => calculateMemberStats(member).debt > 0);
             
             if (unpaidThisWeek.length === 0 && membersWithDebt.length === 0) {
@@ -1024,7 +1102,7 @@
             
             kasData.forEach(member => {
                 const stats = calculateMemberStats(member);
-                csv += `"${member.name}",${member.totalPaid},${stats.weeksPaid},${stats.debt},"${stats.paidThisWeek ? 'Sudah Bayar' : 'Belum Bayar'}"\n`;
+                csv += `"${member.name}",${member.totalPaid},${stats.weeksPaid},${stats.debt},"${member.paidThisWeek ? 'Sudah Bayar' : 'Belum Bayar'}"\n`;
             });
             
             // Buat blob dan download
